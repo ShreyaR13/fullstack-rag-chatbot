@@ -11,7 +11,7 @@ api_key = os.getenv("OPENAI_API_KEY")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Later, we'll restrict this to your frontend URL.
+    allow_origins=["*"],  # Later, restrict this to frontend URL.
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,8 +37,6 @@ class ChatResponse(BaseModel):
 # chat endpoint
 @app.post("/chat", response_model=ChatResponse)
 def chat(request: ChatRequest):
-    # for now just echo question
-    # return {"answer": f"You asked: {request.question}"}
     response = client.chat.completions.create(
         model = "gpt-4o",
         messages = [
