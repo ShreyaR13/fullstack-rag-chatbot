@@ -3,6 +3,10 @@ venv/
 
 # Ignore environment variable files
 .env
+ENV/
+.venv/
+instance/
+.pytest_cache/
 
 # Ignore Python cache files
 __pycache__/

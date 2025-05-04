@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from openai import OpenAI
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,19 +52,25 @@ def chat(request: ChatRequest):
     question = request.question
 
     # step 1: embed users question
-    embedding_response = client.embeddings.create(
-        model = "text-embedding-3-small",
-        input = question
-    )
-    question_embedding = embedding_response.data[0].embedding
+    try:
+        embedding_response = client.embeddings.create(
+            model = "text-embedding-3-small",
+            input = question
+        )
+        question_embedding = embedding_response.data[0].embedding
+    except Exception as e: 
+        raise HTTPException(status_code=500, detail=f"Embedding generation failed: {str(e)}")
 
     # step 2: query pinecone for similar chunks
-    search_results = index.query(
-        vector = question_embedding,
-        top_k=2,
-        include_metadata = True
-    )
-
+    try:
+        search_results = index.query(
+            vector = question_embedding,
+            top_k=3,
+            include_metadata = True
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Pinecone query failed: {str(e)}")
+    
     # step 3: collect retrieved chunks
     retrieved_chunks = []
     for match in search_results.matches:
@@ -72,23 +78,32 @@ def chat(request: ChatRequest):
             retrieved_chunks.append(match.metadata["text"])
     
     # if no match found, return empty string
-    context = "\n\n".join(retrieved_chunks) if retrieved_chunks else "No relevant context found."
+    if not retrieved_chunks or all(match.score < 0.75 for match in search_results.matches):
+        retrieved_chunks.append("No relevant information found in the document.")
 
-    response = client.chat.completions.create(
-        model = "gpt-4o",
-        messages = [
-            {
-                "role": "system", 
-                "content": "You are a helpful assistant. Use the provided context to answer the question."
-            },
-            {
-                "role": "user", 
-                "content": f"Context: {context}\n\nQuestion: {question}"
-            }
-        ],
-        max_tokens = 200
-    )
-    answer = response.choices[0].message.content.strip()
+    #### 4️⃣ Prepare context for GPT-4o
+    context_text = "\n\n".join(retrieved_chunks)
+
+    # send question + retrieved chunks to GPR 4o
+    try:
+        response = client.chat.completions.create(
+            model = "gpt-4o",
+            messages = [
+                {
+                    "role": "system", 
+                    "content": "You are a helpful assistant. ONLY answer the user's question using the context provided. If the context does not contain relevant information, reply: 'No relevant information found in the document.'"
+
+                },
+                {
+                    "role": "user", 
+                    "content": f"Context: {context_text}\n\nQuestion: {question}"
+                }
+            ],
+            max_tokens = 300
+        )
+        answer = response.choices[0].message.content.strip()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"GPT-4o chat failed: {str(e)}")
     return {"answer": answer}
 
 # Function to get or create index
@@ -120,11 +135,15 @@ def chunk_text(text, chunk_size=300, overlap=50):
     return chunks
 
 @app.post("/ingest")
-def ingest(request: IngestRequest):
-    document_text = request.document_text
+async def ingest(file: UploadFile = File(...)):
+    # for text upload api call
+    # document_text = request.document_text
+
+    content = await file.read()
+    text = content.decode("utf-8")
 
     # chunk the document
-    chunks = chunk_text(document_text)
+    chunks = chunk_text(text)
 
     # generate embeddings (semantic vectors) for each chunk
     embeddings = []
@@ -153,6 +172,7 @@ def ingest(request: IngestRequest):
     index.upsert(vectors=vectors)
 
     return {
+        "filename": file.filename,
         "num_chunks": len(chunks),
         "chunks": chunks,
         "num_embeddings" : len(embeddings),
@@ -160,5 +180,5 @@ def ingest(request: IngestRequest):
         "first_embedding_dimension": len(embeddings[0]) if embeddings else 0,
         "first_embedding_sample": embeddings[0][:5] if embeddings else [],
         "first_vector_sample_values": vectors[0]["values"][:5],
-        "first_vector_metadata": vectors[0]["metadata"]
+        "first_vector_metadata": vectors[0]["metadata"] if vectors else {}
         }
