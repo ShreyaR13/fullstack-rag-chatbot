@@ -1,16 +1,23 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request, Depends
 from pydantic import BaseModel
 from openai import OpenAI
 from fastapi.middleware.cors import CORSMiddleware
 import os
 from dotenv import load_dotenv
 from pinecone import Pinecone, ServerlessSpec
+from cachetools import TTLCache
 
 app = FastAPI()
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT")
+MAX_FILE_SIZE = 2 * 1024 * 1024  # 2MB
+RATE_LIMIT = 5
+TIME_WINDOW = 60  # seconds
+
+rate_limit_cache = TTLCache(maxsize=1000, ttl=TIME_WINDOW)
+
 
 # CORS
 app.add_middleware(
@@ -46,8 +53,17 @@ class ChatResponse(BaseModel):
 class IngestRequest(BaseModel):
     document_text: str
 
+def rate_limiter(request: Request):
+    client_ip = request.client.host
+    count = rate_limit_cache.get(client_ip, 0)
+
+    if count >= RATE_LIMIT:
+        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
+
+    rate_limit_cache[client_ip] = count + 1
+
 # chat endpoint
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=ChatResponse, dependencies=[Depends(rate_limiter)])
 def chat(request: ChatRequest):
     question = request.question
 
@@ -134,12 +150,16 @@ def chunk_text(text, chunk_size=300, overlap=50):
         start += chunk_size - overlap
     return chunks
 
-@app.post("/ingest")
+@app.post("/ingest", dependencies=[Depends(rate_limiter)])
 async def ingest(file: UploadFile = File(...)):
     # for text upload api call
     # document_text = request.document_text
 
     content = await file.read()
+
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large. Max size is 2 MB.")
+
     text = content.decode("utf-8")
 
     # chunk the document
