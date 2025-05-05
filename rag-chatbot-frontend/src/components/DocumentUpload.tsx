@@ -27,7 +27,7 @@ const DocumentUpload: React.FC = () => {
                     "Content-Type": "multipart/form-data"
                 }
             });
-            setStatus("Upload successful!" + JSON.stringify(response.data));
+            setStatus(`Upload successful! File: ${response.data.filename}`);
         } catch (error: any) {
             console.error("Upload failed:", error);
             setStatus("Upload failed. See console for details.");
